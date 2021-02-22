@@ -26,6 +26,7 @@ import reactor.core.publisher.Mono;
 
 import org.springframework.cloud.function.context.FunctionCatalog;
 import org.springframework.cloud.function.context.FunctionProperties;
+import org.springframework.cloud.function.context.MessageRoutingCallback;
 import org.springframework.cloud.function.context.catalog.SimpleFunctionRegistry.FunctionInvocationWrapper;
 import org.springframework.context.expression.MapAccessor;
 import org.springframework.expression.BeanResolver;
@@ -63,14 +64,17 @@ public class RoutingFunction implements Function<Object, Object> {
 
 	private final FunctionProperties functionProperties;
 
+	private final MessageRoutingCallback routingCallback;
+
 	public RoutingFunction(FunctionCatalog functionCatalog, FunctionProperties functionProperties) {
-		this(functionCatalog, functionProperties, null);
+		this(functionCatalog, functionProperties, null, null);
 	}
 
 	public RoutingFunction(FunctionCatalog functionCatalog, FunctionProperties functionProperties,
-			BeanResolver beanResolver) {
+			BeanResolver beanResolver, MessageRoutingCallback routingCallback) {
 		this.functionCatalog = functionCatalog;
 		this.functionProperties = functionProperties;
+		this.routingCallback = routingCallback;
 		this.evalContext.addPropertyAccessor(new MapAccessor());
 		evalContext.setBeanResolver(beanResolver);
 	}
@@ -79,6 +83,7 @@ public class RoutingFunction implements Function<Object, Object> {
 	public Object apply(Object input) {
 		return this.route(input, input instanceof Publisher);
 	}
+
 
 	/*
 	 * - Check if spring.cloud.function.definition is set in header and if it is use it.
@@ -93,7 +98,11 @@ public class RoutingFunction implements Function<Object, Object> {
 		FunctionInvocationWrapper function;
 		if (input instanceof Message) {
 			Message<?> message = (Message<?>) input;
-			if (StringUtils.hasText((String) message.getHeaders().get("spring.cloud.function.definition"))) {
+
+			if (this.routingCallback != null) {
+				function = this.functionFromDefinition(this.routingCallback.route(message, this.functionProperties));
+			}
+			else if (StringUtils.hasText((String) message.getHeaders().get("spring.cloud.function.definition"))) {
 				function = functionFromDefinition((String) message.getHeaders().get("spring.cloud.function.definition"));
 				if (function.isInputTypePublisher()) {
 					this.assertOriginalInputIsNotPublisher(originalInputIsPublisher);
@@ -109,7 +118,7 @@ public class RoutingFunction implements Function<Object, Object> {
 				function = this.functionFromExpression(functionProperties.getRoutingExpression(), message);
 			}
 			else if (StringUtils.hasText(functionProperties.getDefinition())) {
-				function = functionFromDefinition(functionProperties.getDefinition());
+				function = this.functionFromDefinition(functionProperties.getDefinition());
 			}
 			else {
 				throw new IllegalStateException("Failed to establish route, since neither were provided: "
